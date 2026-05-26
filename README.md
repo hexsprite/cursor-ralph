@@ -52,6 +52,16 @@ This implementation isn't the "true" Ralph loop (which uses more sophisticated s
 - Requires **`bash`**, **`jq`**, and **`grep`** on PATH.
 - Optional legacy fallback: [`hooks/continue-linux.sh`](hooks/continue-linux.sh) simulates typing `/ralph-loop --continue <trace_id>` if you cannot set `loop_limit: null`. Install **`xdotool`** (X11) or **`ydotool`** / **`wtype`** (Wayland).
 
+
+### Windows notes
+
+- Works on Windows with **`loop_limit`: null** — no macOS `osascript` required.
+- Hook scripts are **bash**; use **Git Bash** (bundled with Git for Windows) or ensure bash is on PATH when Cursor runs hooks.
+- Use forward slashes or escaped backslashes in `hooks.json` command paths, e.g. `"C:/Users/you/.cursor-ralph/hooks/ralph-loop-stop.sh"`.
+- Requires **`jq`** in Git Bash (`winget install jqlang.jq` or download from [jqlang.org](https://jqlang.org/)).
+- Optional legacy fallback: [`hooks/continue-windows.ps1`](hooks/continue-windows.ps1) uses PowerShell `SendKeys` when `loop_limit: null` cannot be set. Run via Git Bash: `powershell.exe -File hooks/continue-windows.ps1 "/ralph-loop --continue <trace_id>"`.
+- Known Cursor quirk: stop-hook JSON may show as `{}` in Hooks Execution Log on Windows even when valid ([forum thread](https://forum.cursor.com/t/stop-hook-followup-message-not-captured-on-windows-execution-log-shows-despite-valid-json-on-stdout/)); verify behavior in chat, not only the log.
+
 ### macOS notes
 
 - Grant Accessibility permissions to Cursor if you use the optional keyboard fallback (System Settings → Privacy & Security → Accessibility).
