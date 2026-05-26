@@ -1,86 +1,61 @@
-#!/bin/bash
-# Ralph loop controller - runs after every agent response
-# If in a ralph loop: increment iteration, check completion, optionally continue
-# Uses osascript to bypass Cursor's 5-iteration limit on followup_message
+#!/usr/bin/env bash
+# Ralph loop controller - runs after every agent response.
+# When the loop is active, increment counters, check completion, and either stop
+# or return followup_message for the next iteration.
+#
+# Cursor stop hook API (stdin JSON):
+#   { "status": "completed"|"aborted"|"error", "loop_count": N, ... }
+#   stdout: { "followup_message": "<text>" } to continue, or agent_message / empty to stop
+#
+# REQUIRED: Register this hook with "loop_limit": null in hooks.json so Cursor
+# does not cap followup_message chains at 5 iterations. See hooks/hooks.json.example.
 
 set -euo pipefail
 
-CURSOR_ITERATION_LIMIT=5  # Cursor's built-in limit on followup_message chaining
+HOOK_INPUT=$(cat)
 
 TRACE_ID="${CURSOR_TRACE_ID:-}"
 
-# If no trace ID, nothing to do
-if [ -z "$TRACE_ID" ]; then
+if [[ -z "$TRACE_ID" ]]; then
   exit 0
 fi
 
 STATE_FILE="/tmp/cursor-ralph-loop-${TRACE_ID}.json"
 
-# If no state file, not in a ralph loop
-if [ ! -f "$STATE_FILE" ]; then
+if [[ ! -f "$STATE_FILE" ]]; then
   exit 0
 fi
 
-# Read state
 STATE=$(cat "$STATE_FILE")
 ITERATIONS=$(echo "$STATE" | jq -r '.iterations // 0')
-SESSION_ITERATIONS=$(echo "$STATE" | jq -r '.session_iterations // 0')
 MAX_ITERATIONS=$(echo "$STATE" | jq -r '.max_iterations // 20')
 COMPLETION_PROMISE=$(echo "$STATE" | jq -r '.completion_promise // "COMPLETE"')
 PROMPT=$(echo "$STATE" | jq -r '.prompt // ""')
 STOP=$(echo "$STATE" | jq -r '.stop // false')
 LAST_OUTPUT=$(echo "$STATE" | jq -r '.last_output // ""')
 
-# If user clicked stop, exit silently (don't continue loop)
-if [ "$STOP" = "true" ]; then
+if [[ "$STOP" = "true" ]]; then
   rm -f "$STATE_FILE"
   exit 0
 fi
 
-# Increment both counters
 NEW_ITERATIONS=$((ITERATIONS + 1))
-NEW_SESSION_ITERATIONS=$((SESSION_ITERATIONS + 1))
-jq --argjson iter "$NEW_ITERATIONS" --argjson sess "$NEW_SESSION_ITERATIONS" \
-  '.iterations = $iter | .session_iterations = $sess' "$STATE_FILE" > "${STATE_FILE}.tmp" \
+jq --argjson iter "$NEW_ITERATIONS" '.iterations = $iter' "$STATE_FILE" > "${STATE_FILE}.tmp" \
   && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
-# Check if max iterations reached
-if [ "$NEW_ITERATIONS" -ge "$MAX_ITERATIONS" ]; then
+if [[ "$NEW_ITERATIONS" -ge "$MAX_ITERATIONS" ]]; then
   rm -f "$STATE_FILE"
-  echo "{\"agent_message\": \"Max iterations ($MAX_ITERATIONS) reached. Stopping ralph loop.\"}"
+  jq -n --arg msg "Max iterations ($MAX_ITERATIONS) reached. Stopping ralph loop." \
+    '{agent_message: $msg}'
   exit 0
 fi
 
-# Check if completion promise was found in last output
-if [ -n "$LAST_OUTPUT" ] && echo "$LAST_OUTPUT" | grep -qF "$COMPLETION_PROMISE"; then
+if [[ -n "$LAST_OUTPUT" ]] && echo "$LAST_OUTPUT" | grep -qF "$COMPLETION_PROMISE"; then
   rm -f "$STATE_FILE"
-  echo "{\"agent_message\": \"Task completed after $NEW_ITERATIONS iterations.\"}"
+  jq -n --arg msg "Task completed after $NEW_ITERATIONS iterations." '{agent_message: $msg}'
   exit 0
 fi
 
-# Check if we're hitting Cursor's session limit
-if [ "$NEW_SESSION_ITERATIONS" -ge "$CURSOR_ITERATION_LIMIT" ]; then
-  # Reset session counter for next session
-  jq '.session_iterations = 0' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
-
-  # Spawn osascript to continue the loop in a new session
-  # This bypasses Cursor's 5-iteration limit by starting a "new" user message
-  osascript -e "
-    delay 1.5
-    tell application \"Cursor\" to activate
-    delay 0.3
-    tell application \"System Events\"
-      keystroke \"/ralph-loop --continue ${TRACE_ID}\"
-      keystroke return
-    end tell
-  " &>/dev/null &
-
-  # Don't return followup_message - let osascript handle continuation
-  echo "{\"agent_message\": \"Session limit reached. Continuing automatically... (iteration $NEW_ITERATIONS of $MAX_ITERATIONS)\"}"
-  exit 0
-fi
-
-# Continue the loop normally - return followup_message (use jq for proper JSON escaping)
 jq -n \
   --arg prompt "$PROMPT" \
   --arg iter "$NEW_ITERATIONS" \
